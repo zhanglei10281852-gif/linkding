@@ -1,6 +1,6 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import HttpRequest, HttpResponseRedirect
+from django.http import HttpRequest, HttpResponseBadRequest, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import reverse
 
@@ -31,8 +31,14 @@ def action(request: HttpRequest):
     elif "move_bundle" in request.POST:
         bundle_id = request.POST.get("move_bundle")
         bundle_to_move = access.bundle_write(request, bundle_id)
-        move_position = int(request.POST.get("move_position"))
-        bundles.move_bundle(bundle_to_move, move_position)
+        try:
+            move_position = int(request.POST.get("move_position"))
+        except (TypeError, ValueError):
+            return HttpResponseBadRequest("Invalid move position.")
+        try:
+            bundles.move_bundle(bundle_to_move, move_position)
+        except bundles.InvalidBundleOrder:
+            return HttpResponseBadRequest("Invalid move position.")
 
     return HttpResponseRedirect(reverse("linkding:bundles.index"))
 

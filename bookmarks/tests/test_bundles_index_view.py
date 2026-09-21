@@ -158,6 +158,35 @@ class BundleIndexViewTestCase(TestCase, BookmarkFactoryMixin):
         self.assertEqual(response.status_code, 302)
         self.assertRedirects(response, reverse("linkding:bundles.index"))
 
+    def test_move_bundle_out_of_range_returns_400(self):
+        bundle1 = self.setup_bundle(name="Bundle 1", order=0)
+        bundle2 = self.setup_bundle(name="Bundle 2", order=1)
+
+        # Valid move range is 0..1, so position 2 is out of bounds
+        response = self.move_bundle(bundle1, 2)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertBundleOrder([bundle1, bundle2])
+
+    def test_move_bundle_negative_position_returns_400(self):
+        bundle1 = self.setup_bundle(name="Bundle 1", order=0)
+
+        response = self.move_bundle(bundle1, -1)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertBundleOrder([bundle1])
+
+    def test_move_bundle_non_integer_position_returns_400(self):
+        bundle1 = self.setup_bundle(name="Bundle 1", order=0)
+
+        response = self.client.post(
+            reverse("linkding:bundles.action"),
+            {"move_bundle": str(bundle1.id), "move_position": "not-a-number"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertBundleOrder([bundle1])
+
     def test_can_only_move_user_owned_bundles(self):
         other_user = self.setup_user()
         other_user_bundle1 = self.setup_bundle(user=other_user)

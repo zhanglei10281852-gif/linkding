@@ -217,6 +217,18 @@ class BookmarkBundle(models.Model):
     date_modified = models.DateTimeField(auto_now=True, null=False)
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "order"],
+                name="bookmarks_bookmarkbundle_owner_order_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(order__gte=0),
+                name="bookmarks_bookmarkbundle_order_non_negative",
+            ),
+        ]
+
     def __str__(self):
         return self.name
 

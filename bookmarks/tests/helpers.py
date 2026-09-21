@@ -181,12 +181,17 @@ class BookmarkFactoryMixin:
         excluded_tags: str = "",
         filter_unread: str = BookmarkBundle.FILTER_STATE_OFF,
         filter_shared: str = BookmarkBundle.FILTER_STATE_OFF,
-        order: int = 0,
+        order: int = None,
     ):
         if user is None:
             user = self.get_or_create_test_user()
         if not name:
             name = get_random_string(length=32)
+        # Factory setup bypasses the service layer; assign a dense order by
+        # default so multiple factory-created bundles do not collide with
+        # the per-user unique order constraint.
+        if order is None:
+            order = BookmarkBundle.objects.filter(owner=user).count()
         bundle = BookmarkBundle(
             name=name,
             owner=user,

@@ -58,14 +58,26 @@ class BundleNewViewTestCase(TestCase, BookmarkFactoryMixin, HtmlTestMixin):
         bundle2 = BookmarkBundle.objects.get(name="Bundle 2")
         self.assertEqual(bundle2.order, 1)
 
-        # Create another bundle with a higher order
-        self.setup_bundle(order=5)
+        # Create another bundle with a higher order (a hole)
+        holey_bundle = self.setup_bundle(name="Bundle with hole", order=5)
 
-        # Create third bundle
+        # Create third bundle without an order: it is appended to the end,
+        # while the write path compacts the existing hole
         form_data_3 = self.create_form_data({"name": "Bundle 3"})
         self.client.post(reverse("linkding:bundles.new"), form_data_3)
         bundle3 = BookmarkBundle.objects.get(name="Bundle 3")
-        self.assertEqual(bundle3.order, 6)
+        self.assertEqual(bundle3.order, 3)
+
+        holey_bundle.refresh_from_db()
+        self.assertEqual(holey_bundle.order, 2)
+
+        # The full per-user sequence is dense
+        orders = list(
+            BookmarkBundle.objects.filter(owner=self.user)
+            .order_by("order")
+            .values_list("order", flat=True)
+        )
+        self.assertEqual(orders, [0, 1, 2, 3])
 
     def test_incrementing_order_ignores_other_user_bookmark(self):
         other_user = self.setup_user()

@@ -58,8 +58,30 @@ class BookmarkBundleSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         bundle = BookmarkBundle(**validated_data)
-        bundle.order = validated_data.get("order", None)
-        return bundles.create_bundle(bundle, self.context["user"])
+        target_order = validated_data.get("order")
+        try:
+            return bundles.create_bundle(bundle, self.context["user"], target_order)
+        except bundles.InvalidBundleOrder as error:
+            raise serializers.ValidationError(
+                {"order": str(error)}
+            ) from error
+
+    def update(self, instance, validated_data):
+        order_is_provided = "order" in validated_data
+        target_order = validated_data.pop("order", None)
+
+        for field_name, field in self.fields.items():
+            if not field.read_only and field_name in validated_data:
+                setattr(instance, field_name, validated_data[field_name])
+
+        try:
+            return bundles.update_bundle(
+                instance, target_order if order_is_provided else None
+            )
+        except bundles.InvalidBundleOrder as error:
+            raise serializers.ValidationError(
+                {"order": str(error)}
+            ) from error
 
 
 class BookmarkSerializer(serializers.ModelSerializer):
