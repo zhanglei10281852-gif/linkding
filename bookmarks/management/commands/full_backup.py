@@ -1,9 +1,10 @@
 import os
-import sqlite3
-import tempfile
-import zipfile
 
-from django.core.management.base import BaseCommand
+from django.conf import settings
+from django.core.management.base import BaseCommand, CommandError
+from django.db import connections
+
+from bookmarks.services import backups
 
 
 class Command(BaseCommand):
@@ -14,62 +15,40 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         backup_file = options["backup_file"]
-        with zipfile.ZipFile(backup_file, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            # Backup the database
-            self.stdout.write("Create database backup...")
-            with tempfile.TemporaryDirectory() as temp_dir:
-                backup_db_file = os.path.join(temp_dir, "db.sqlite3")
-                self.backup_database(backup_db_file)
-                zip_file.write(backup_db_file, "db.sqlite3")
 
-            # Backup the assets folder
-            if not os.path.exists(os.path.join("data", "assets")):
-                self.stdout.write(
-                    self.style.WARNING("No assets folder found. Skipping...")
-                )
-            else:
-                self.stdout.write("Backup bookmark assets...")
-                assets_folder = os.path.join("data", "assets")
-                for root, _, files in os.walk(assets_folder):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        zip_file.write(file_path, os.path.join("assets", file))
+        if not settings.USE_SQLITE:
+            raise CommandError(
+                "full_backup only supports the default SQLite database. Please"
+                " back up the database and the data folder manually."
+            )
 
-            # Backup the favicons folder
-            if not os.path.exists(os.path.join("data", "favicons")):
-                self.stdout.write(
-                    self.style.WARNING("No favicons folder found. Skipping...")
-                )
-            else:
-                self.stdout.write("Backup bookmark favicons...")
-                favicons_folder = os.path.join("data", "favicons")
-                for root, _, files in os.walk(favicons_folder):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        zip_file.write(file_path, os.path.join("favicons", file))
+        db_path = connections["default"].settings_dict.get("NAME", "")
+        if backups.is_memory_db_name(db_path):
+            raise CommandError(
+                "full_backup requires a file-based SQLite database, but the"
+                " default database has no file path."
+            )
 
-            # Backup the previews folder
-            if not os.path.exists(os.path.join("data", "previews")):
+        folders = {
+            "assets": settings.LD_ASSET_FOLDER,
+            "favicons": settings.LD_FAVICON_FOLDER,
+            "previews": settings.LD_PREVIEW_FOLDER,
+        }
+
+        for name, folder in folders.items():
+            if not os.path.exists(folder):
                 self.stdout.write(
-                    self.style.WARNING("No previews folder found. Skipping...")
+                    self.style.WARNING(f"No {name} folder found. Skipping...")
                 )
-            else:
-                self.stdout.write("Backup bookmark previews...")
-                previews_folder = os.path.join("data", "previews")
-                for root, _, files in os.walk(previews_folder):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        zip_file.write(file_path, os.path.join("previews", file))
+
+        try:
+            backups.create_full_backup(
+                backup_file=backup_file,
+                db_path=db_path,
+                folders=folders,
+                progress=lambda message: self.stdout.write(message),
+            )
+        except backups.BackupError as error:
+            raise CommandError(f"Backup failed: {error}") from error
 
         self.stdout.write(self.style.SUCCESS(f"Backup created at {backup_file}"))
-
-    def backup_database(self, backup_db_file):
-        def progress(status, remaining, total):
-            self.stdout.write(f"Copied {total - remaining} of {total} pages...")
-
-        source_db = sqlite3.connect(os.path.join("data", "db.sqlite3"))
-        backup_db = sqlite3.connect(backup_db_file)
-        with backup_db:
-            source_db.backup(backup_db, pages=50, progress=progress)
-        backup_db.close()
-        source_db.close()

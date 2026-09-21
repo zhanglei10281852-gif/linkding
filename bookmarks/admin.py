@@ -22,6 +22,7 @@ from bookmarks.models import (
     Toast,
     UserProfile,
 )
+from bookmarks.services import backups
 from bookmarks.services.bookmarks import archive_bookmark, unarchive_bookmark
 
 
@@ -144,8 +145,10 @@ class AdminBookmark(admin.ModelAdmin):
 
     def delete_selected_bookmarks(self, request, queryset: QuerySet):
         bookmarks_count = queryset.count()
-        for bookmark in queryset:
-            bookmark.delete()
+        # Delete database rows and files atomically relative to backups
+        with backups.data_change_lock():
+            for bookmark in queryset:
+                bookmark.delete()
         self.message_user(
             request,
             ngettext(

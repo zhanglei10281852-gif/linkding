@@ -11,7 +11,7 @@ from django.http import StreamingHttpResponse
 from django.utils import formats, timezone
 
 from bookmarks.models import Bookmark, BookmarkAsset
-from bookmarks.services import http_client, singlefile
+from bookmarks.services import backups, http_client, singlefile
 from bookmarks.services.website_loader import (
     detect_content_type,
     fake_request_headers,
@@ -57,43 +57,48 @@ def create_snapshot(asset: BookmarkAsset):
 
 
 def _create_html_snapshot(asset: BookmarkAsset):
-    # Create snapshot into temporary file
+    # Create snapshot into temporary file. This is the slow step and runs
+    # without the data change lock, so other writes are not blocked.
     temp_filename = _generate_asset_filename(asset, asset.bookmark.url, "tmp")
     temp_filepath = os.path.join(settings.LD_ASSET_FOLDER, temp_filename)
     singlefile.create_snapshot(asset.bookmark.url, temp_filepath)
 
-    # Store as gzip in asset folder
     filename = _generate_asset_filename(asset, asset.bookmark.url, "html.gz")
     filepath = os.path.join(settings.LD_ASSET_FOLDER, filename)
-    with (
-        open(temp_filepath, "rb") as temp_file,
-        gzip.open(filepath, "wb") as gz_file,
-    ):
-        shutil.copyfileobj(temp_file, gz_file)
 
-    # Remove temporary file
-    os.remove(temp_filepath)
+    # Publish file and database updates atomically relative to backups
+    with backups.data_change_lock():
+        # Store as gzip in asset folder
+        with (
+            open(temp_filepath, "rb") as temp_file,
+            gzip.open(filepath, "wb") as gz_file,
+        ):
+            shutil.copyfileobj(temp_file, gz_file)
 
-    # Update display name for HTML
-    timestamp = formats.date_format(asset.date_created, "SHORT_DATE_FORMAT")
+        # Remove temporary file
+        os.remove(temp_filepath)
 
-    asset.status = BookmarkAsset.STATUS_COMPLETE
-    asset.content_type = BookmarkAsset.CONTENT_TYPE_HTML
-    asset.display_name = f"HTML snapshot from {timestamp}"
-    asset.file = filename
-    asset.gzip = True
-    asset.save()
+        # Update display name for HTML
+        timestamp = formats.date_format(asset.date_created, "SHORT_DATE_FORMAT")
 
-    asset.bookmark.latest_snapshot = asset
-    asset.bookmark.date_modified = timezone.now()
-    asset.bookmark.save()
+        asset.status = BookmarkAsset.STATUS_COMPLETE
+        asset.content_type = BookmarkAsset.CONTENT_TYPE_HTML
+        asset.display_name = f"HTML snapshot from {timestamp}"
+        asset.file = filename
+        asset.gzip = True
+        asset.save()
+
+        asset.bookmark.latest_snapshot = asset
+        asset.bookmark.date_modified = timezone.now()
+        asset.bookmark.save()
 
 
 def _create_pdf_snapshot(asset: BookmarkAsset):
     url = asset.bookmark.url
     max_size = settings.LD_SNAPSHOT_PDF_MAX_SIZE
 
-    # Download PDF to temporary file
+    # Download PDF to temporary file. This is the slow step and runs without
+    # the data change lock, so other writes are not blocked.
     temp_filename = _generate_asset_filename(asset, url, "tmp")
     temp_filepath = os.path.join(settings.LD_ASSET_FOLDER, temp_filename)
 
@@ -121,31 +126,33 @@ def _create_pdf_snapshot(asset: BookmarkAsset):
                     raise PdfTooLargeError(f"PDF size exceeds limit ({max_size} bytes)")
                 f.write(chunk)
 
-    # Store as gzip in asset folder
-    filename = _generate_asset_filename(asset, url, "pdf.gz")
-    filepath = os.path.join(settings.LD_ASSET_FOLDER, filename)
-    with (
-        open(temp_filepath, "rb") as temp_file,
-        gzip.open(filepath, "wb") as gz_file,
-    ):
-        shutil.copyfileobj(temp_file, gz_file)
+    # Publish file and database updates atomically relative to backups
+    with backups.data_change_lock():
+        # Store as gzip in asset folder
+        filename = _generate_asset_filename(asset, url, "pdf.gz")
+        filepath = os.path.join(settings.LD_ASSET_FOLDER, filename)
+        with (
+            open(temp_filepath, "rb") as temp_file,
+            gzip.open(filepath, "wb") as gz_file,
+        ):
+            shutil.copyfileobj(temp_file, gz_file)
 
-    # Remove temporary file
-    os.remove(temp_filepath)
+        # Remove temporary file
+        os.remove(temp_filepath)
 
-    # Update display name for PDF
-    timestamp = formats.date_format(asset.date_created, "SHORT_DATE_FORMAT")
+        # Update display name for PDF
+        timestamp = formats.date_format(asset.date_created, "SHORT_DATE_FORMAT")
 
-    asset.status = BookmarkAsset.STATUS_COMPLETE
-    asset.content_type = BookmarkAsset.CONTENT_TYPE_PDF
-    asset.display_name = f"PDF download from {timestamp}"
-    asset.file = filename
-    asset.gzip = True
-    asset.save()
+        asset.status = BookmarkAsset.STATUS_COMPLETE
+        asset.content_type = BookmarkAsset.CONTENT_TYPE_PDF
+        asset.display_name = f"PDF download from {timestamp}"
+        asset.file = filename
+        asset.gzip = True
+        asset.save()
 
-    asset.bookmark.latest_snapshot = asset
-    asset.bookmark.date_modified = timezone.now()
-    asset.bookmark.save()
+        asset.bookmark.latest_snapshot = asset
+        asset.bookmark.date_modified = timezone.now()
+        asset.bookmark.save()
 
 
 def upload_snapshot(bookmark: Bookmark, html: bytes):
@@ -153,10 +160,13 @@ def upload_snapshot(bookmark: Bookmark, html: bytes):
     filename = _generate_asset_filename(asset, asset.bookmark.url, "html.gz")
     filepath = os.path.join(settings.LD_ASSET_FOLDER, filename)
 
+    # Write the file without the lock. Until the database row is committed,
+    # the file is unreferenced and excluded from any backup snapshot.
     with gzip.open(filepath, "wb") as gz_file:
         gz_file.write(html)
 
-    # Only save the asset if the file was written successfully
+    # Only save the asset if the file was written successfully. Database
+    # updates are published atomically relative to backups.
     timestamp = formats.date_format(asset.date_created, "SHORT_DATE_FORMAT")
 
     asset.status = BookmarkAsset.STATUS_COMPLETE
@@ -164,11 +174,13 @@ def upload_snapshot(bookmark: Bookmark, html: bytes):
     asset.display_name = f"HTML snapshot from {timestamp}"
     asset.file = filename
     asset.gzip = True
-    asset.save()
 
-    asset.bookmark.latest_snapshot = asset
-    asset.bookmark.date_modified = timezone.now()
-    asset.bookmark.save()
+    with backups.data_change_lock():
+        asset.save()
+
+        asset.bookmark.latest_snapshot = asset
+        asset.bookmark.date_modified = timezone.now()
+        asset.bookmark.save()
 
     return asset
 
@@ -186,6 +198,9 @@ def upload_asset(bookmark: Bookmark, upload_file: UploadedFile):
         )
         name, extension = os.path.splitext(upload_file.name)
 
+        # Write the file without the lock (compression can take a moment).
+        # Until the database row is committed, the file is unreferenced and
+        # excluded from any backup snapshot.
         # automatically gzip the file if it is not already gzipped
         if upload_file.content_type != "application/gzip":
             filename = _generate_asset_filename(
@@ -207,18 +222,22 @@ def upload_asset(bookmark: Bookmark, upload_file: UploadedFile):
             asset.file = filename
             asset.file_size = upload_file.size
 
-        asset.save()
+        # Database updates are published atomically relative to backups
+        with backups.data_change_lock():
+            asset.save()
 
-        asset.bookmark.date_modified = timezone.now()
-        asset.bookmark.save()
+            asset.bookmark.date_modified = timezone.now()
+            asset.bookmark.save()
 
         logger.info(
-            f"Successfully uploaded asset file. bookmark={bookmark} file={upload_file.name}"
+            f"Successfully uploaded asset file. bookmark={bookmark}"
+            f" file={upload_file.name}"
         )
         return asset
     except Exception as e:
         logger.error(
-            f"Failed to upload asset file. bookmark={bookmark} file={upload_file.name}",
+            f"Failed to upload asset file. bookmark={bookmark}"
+            f" file={upload_file.name}",
             exc_info=e,
         )
         raise e
@@ -264,25 +283,27 @@ def stream_asset_file(asset: BookmarkAsset) -> StreamingHttpResponse:
 
 
 def remove_asset(asset: BookmarkAsset):
-    # If this asset is the latest_snapshot for a bookmark, try to find the next most recent snapshot
-    bookmark = asset.bookmark
-    if bookmark and bookmark.latest_snapshot == asset:
-        latest = (
-            BookmarkAsset.objects.filter(
-                bookmark=bookmark,
-                asset_type=BookmarkAsset.TYPE_SNAPSHOT,
-                status=BookmarkAsset.STATUS_COMPLETE,
+    with backups.data_change_lock():
+        # If this asset is the latest_snapshot for a bookmark, try to find the
+        # next most recent snapshot
+        bookmark = asset.bookmark
+        if bookmark and bookmark.latest_snapshot == asset:
+            latest = (
+                BookmarkAsset.objects.filter(
+                    bookmark=bookmark,
+                    asset_type=BookmarkAsset.TYPE_SNAPSHOT,
+                    status=BookmarkAsset.STATUS_COMPLETE,
+                )
+                .exclude(pk=asset.pk)
+                .order_by("-date_created")
+                .first()
             )
-            .exclude(pk=asset.pk)
-            .order_by("-date_created")
-            .first()
-        )
 
-        bookmark.latest_snapshot = latest
+            bookmark.latest_snapshot = latest
 
-    asset.delete()
-    bookmark.date_modified = timezone.now()
-    bookmark.save()
+        asset.delete()
+        bookmark.date_modified = timezone.now()
+        bookmark.save()
 
 
 def _generate_asset_filename(

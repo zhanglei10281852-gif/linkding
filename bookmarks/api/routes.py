@@ -24,7 +24,14 @@ from bookmarks.models import (
     Tag,
     User,
 )
-from bookmarks.services import assets, auto_tagging, bookmarks, bundles, website_loader
+from bookmarks.services import (
+    assets,
+    auto_tagging,
+    backups,
+    bookmarks,
+    bundles,
+    website_loader,
+)
 from bookmarks.type_defs import HttpRequest
 from bookmarks.views import access
 
@@ -70,6 +77,11 @@ class BookmarkViewSet(
 
         # For single entity actions return user owned bookmarks
         return Bookmark.objects.all().filter(owner=user)
+
+    def perform_destroy(self, instance):
+        # Delete database rows and files atomically relative to backups
+        with backups.data_change_lock():
+            instance.delete()
 
     def get_serializer_context(self):
         disable_scraping = "disable_scraping" in self.request.GET

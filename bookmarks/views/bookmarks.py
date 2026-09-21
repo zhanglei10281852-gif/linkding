@@ -18,7 +18,7 @@ from bookmarks.models import (
     BookmarkSearch,
 )
 from bookmarks.services import assets as asset_actions
-from bookmarks.services import tasks
+from bookmarks.services import backups, tasks
 from bookmarks.services.bookmarks import (
     archive_bookmark,
     archive_bookmarks,
@@ -254,7 +254,9 @@ def edit(request: HttpRequest, bookmark_id: int):
 
 def remove(request: HttpRequest, bookmark_id: int | str):
     bookmark = access.bookmark_write(request, bookmark_id)
-    bookmark.delete()
+    # Delete database rows and files atomically relative to backups
+    with backups.data_change_lock():
+        bookmark.delete()
 
 
 def archive(request: HttpRequest, bookmark_id: int | str):

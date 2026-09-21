@@ -1,0 +1,15 @@
+项目：sissbruecker/linkding｜题目：运行中全量备份的跨介质一致性｜Session：6ab0880cb762f38300940ad9｜结论：部分完成
+
+Rubric ID：1｜状态：通过｜期望行为：没有并发变更时，full_backup 保持既有命令参数、ZIP 内路径和 SQLite 恢复兼容性，固定版本生成的旧格式备份仍可使用。｜实际观察：命令仍只接收 backup_file，新 ZIP 保留 db.sqlite3 与三类目录路径，无 manifest 的旧 ZIP 被识别为 legacy 并通过结构校验。｜直接证据：full_backup.py:12-15；backups.py:580-620；test_full_backup_command.py 的 15 项测试全部通过。
+Rubric ID：2｜状态：不通过｜期望行为：备份期间并发上传或后台生成资产时，最终归档中的数据库引用和 assets、favicons、previews 成员属于同一视图，不出现只在一侧可见的变更。｜实际观察：实际 favicon_loader 原地覆盖旧图标并在首块写入后暂停，full_backup 仍发布且自校验通过，ZIP 中该 favicon 为 0 字节；旧文件是 OLD-COMPLETE，写入完成后的文件是 NEW-PREFIX-COMPLETE。｜直接证据：favicon_loader.py:81-83 未持 data_change_lock；backups.py:273-275 使用硬链接并在 364 行释放锁后构建；受控交错输出 archived_length=0、verified=true。｜原因：后台图标加载器在覆盖旧图标的首块写入后暂停，full_backup 发布并自校验通过的归档中图标长度为 0 字节；旧图标内容完整且后台写入结束后的新图标内容也完整，归档内容不同于前后两种状态｜影响：成功发布的备份包含不属于覆盖前后任一完整状态的空图标，恢复后不能得到同一可恢复视图。｜证据位置：bookmarks/services/favicon_loader.py:81；bookmarks/services/backups.py:273；受控 barrier 验证输出。
+Rubric ID：3｜状态：通过｜期望行为：备份期间删除文件及其数据库引用时，删除完整落在快照边界的一侧，恢复结果不存在悬空引用或无主归档成员。｜实际观察：Web、API、批量服务和后台管理删除路径在删除数据库行及 post_delete 文件清理外层持有 data_change_lock；快照成员来自复制后的数据库，引用文件缺失会终止发布。｜直接证据：bookmarks.py:117-124、views/bookmarks.py:256-260、api/routes.py:81-84、admin.py:146-151、assets.py:285-304、backups.py:352-365。
+Rubric ID：4｜状态：通过｜期望行为：数据库复制、文件读取、校验或最终发布失败时不暴露半成品、不覆盖已有有效备份，并释放协调状态且清除本次临时资源。｜实际观察：四类故障注入均返回错误，旧 ZIP 字节保持不变，临时目录与临时 ZIP 列表为空，故障后可立即重新取得协调锁。｜直接证据：数据库复制 OSError、缺失成员 BackupError、校验 BackupIntegrityError、发布 OSError 四组输出均为 old_preserved=true、temp_artifacts=[]、lock_reacquired=true；backups.py:349-395。
+Rubric ID：5｜状态：不通过｜期望行为：新备份携带覆盖数据库和所有归档成员的确定性清单与内容摘要，自校验能拒绝缺失、额外或被篡改的成员。｜实际观察：在有效 ZIP 追加第二个同名 assets/sample.bin 后，namelist 含四项且该路径出现两次，verify_backup 仍返回 verified=true。｜直接证据：backups.py:488 将 namelist 转为 set，495-502 只比较去重后的名称集合；受控验证输出 duplicate_count=2、accepted=true。｜原因：归档含两个同名的 assets/sample.bin 成员时，verify_backup 仍接受归档并返回校验通过｜影响：清单没有逐个覆盖原始 ZIP 成员，同名额外成员绕过完整性校验。｜证据位置：bookmarks/services/backups.py:488；重复成员验证输出。
+Rubric ID：6｜状态：通过｜期望行为：一次失败完成清理后，生产写入可以继续，随后重新执行备份能够发布一个完整归档而不复用失败运行的残留状态。｜实际观察：文件读取、校验和发布故障解除后均在同一路径重试成功，verify_backup 返回 verified=true，失败运行未留下暂存目录或临时 ZIP。｜直接证据：三组 retry_verified=true；故障后 lock_reacquired=true；backups.py:185-192、389-395。
+Rubric ID：7｜状态：通过｜期望行为：书签上传、删除及后台图标、预览和快照任务在未执行备份时保持现有成功行为、权限和文件布局。｜实际观察：新增 15 项测试全部通过；相关套件 347 项通过，5 项仅在 Windows 清理下载文件时触发 WinError 32，同五项在登记基线独立 worktree 中逐项复现。｜直接证据：pytest 新增套件 15 passed；相关套件 347 passed, 5 failed；基线 test_bookmark_asset_view.py 为 10 passed, 5 failed 且失败测试名和堆栈一致。
+
+关键原始验证摘要
+1. 并发覆盖：old=OLD-COMPLETE；archived_length=0；final=NEW-PREFIX-COMPLETE；self_verify.verified=true；published_non_atomic_view=true。
+2. 重复成员：member_names=[db.sqlite3, assets/sample.bin, backup-manifest.json, assets/sample.bin]；duplicate_count=2；accepted=true；verified=true。
+3. 失败清理：database_copy/file_read/validation/publish 均 old_preserved=true、temp_artifacts=[]、lock_reacquired=true；解除故障后 retry_verified=true。
+4. 测试：test_full_backup_command.py 15 passed；相关套件 347 passed；5 个 WinError 32 清理失败在固定基线得到同名同栈结果。

@@ -3,7 +3,7 @@ import logging
 from django.utils import timezone
 
 from bookmarks.models import Bookmark, User, parse_tag_string
-from bookmarks.services import auto_tagging, tasks, website_loader
+from bookmarks.services import auto_tagging, backups, tasks, website_loader
 from bookmarks.services.tags import get_or_create_tags
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,11 @@ def unarchive_bookmarks(bookmark_ids: [int | str], current_user: User):
 def delete_bookmarks(bookmark_ids: [int | str], current_user: User):
     sanitized_bookmark_ids = _sanitize_id_list(bookmark_ids)
 
-    Bookmark.objects.filter(owner=current_user, id__in=sanitized_bookmark_ids).delete()
+    # Delete database rows and files atomically relative to backups
+    with backups.data_change_lock():
+        Bookmark.objects.filter(
+            owner=current_user, id__in=sanitized_bookmark_ids
+        ).delete()
 
 
 def tag_bookmarks(bookmark_ids: [int | str], tag_string: str, current_user: User):
